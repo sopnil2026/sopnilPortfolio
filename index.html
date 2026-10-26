@@ -302,6 +302,9 @@ var FIREBASE_CONFIG={
   messagingSenderId:"209234268677",
   appId:"1:209234268677:web:a97e98a807eae804b7026c"
 };
+/* Backup passcode, used only while Firebase is not set up yet. */
+var OWNER_HASH="c7dc6fa03b7a11577e90fb897deb76583cdce2a20eb8af5e5081359f16dadf21";
+var SALT="sopnil-portfolio:";
 /* =============================================== */
 
 function fbConfigured(){return !!(window.firebase&&FIREBASE_CONFIG.apiKey&&FIREBASE_CONFIG.apiKey.indexOf("PASTE")!==0)}
@@ -332,6 +335,12 @@ function initFb(){
     console.error("Firebase initialization failed:",e);
     return false;
   }
+}
+function sha256(txt){
+  var enc=new TextEncoder().encode(SALT+txt);
+  return crypto.subtle.digest("SHA-256",enc).then(function(buf){
+    return Array.prototype.map.call(new Uint8Array(buf),function(b){return ("0"+b.toString(16)).slice(-2)}).join("");
+  });
 }
 function openOwner(){if(window.__admin){window.__admin.unlock();window.__admin.open("msgs")}}
 var tries=0,lockUntil=0,lastOwnerLoginError="";
@@ -379,8 +388,12 @@ window.__ownerTry=function(email,pass){
       return fail("Firebase login failed ("+(c||"unknown error")+"). Check Authentication settings and the owner account.");
     });
   }
-  say("Firebase is not configured. Admin sign-in is unavailable.");
-  return Promise.resolve("bad");
+  if(!(window.crypto&&crypto.subtle)){say("Login needs a secure page (https).");return Promise.resolve("bad")}
+  return sha256(pass.trim()).then(function(h){
+    if(h!==OWNER_HASH)return fail("Wrong email or password.");
+    tries=0;try{sessionStorage.setItem("owner-ok",OWNER_HASH)}catch(e){}
+    openOwner();return true;
+  });
 };
 
 /* Optional legacy prompt login helper; no visible button is rendered for it. */
@@ -432,13 +445,46 @@ window.__deleteMessage=function(id){
   return db.collection("messages").doc(id).delete();
 };
 
+/* Load and save the portfolio content separately from visitor messages. */
+window.__loadSiteContent=function(){
+  if(!initFb())return Promise.resolve(null);
+  return db.collection("siteContent").doc("portfolio").get().then(function(snap){
+    if(!snap.exists)return null;
+    var row=snap.data();
+    return row&&row.data&&typeof row.data==="object"?row.data:null;
+  }).catch(function(err){
+    window.__siteContentLoadError=err&&err.code||"read-failed";
+    console.warn("Portfolio content could not be loaded from Firebase:",err);
+    return null;
+  });
+};
+window.__saveSiteContent=function(state){
+  if(!initFb())return Promise.reject({code:"not-configured"});
+  var user=auth&&auth.currentUser;
+  if(!user||!user.email||user.email.toLowerCase()!==OWNER_EMAIL){
+    return Promise.reject({code:"unauthenticated"});
+  }
+  var serialized;
+  try{serialized=JSON.stringify(state)}catch(e){return Promise.reject({code:"serialize-failed"})}
+  /* Firestore limits a document to 1 MiB; keep a buffer for metadata/encoding. */
+  var byteSize=(typeof Blob!=="undefined")?new Blob([serialized]).size:serialized.length;
+  if(byteSize>850000)return Promise.reject({code:"too_large"});
+  return db.collection("siteContent").doc("portfolio").set({
+    data:state,
+    updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+  });
+};
+
 /* Keep the owner signed in on this device. */
 window.addEventListener("load",function(){
   if(initFb()){
     auth.onAuthStateChanged(function(u){
       if(u&&u.email&&u.email.toLowerCase()===OWNER_EMAIL&&window.__admin)window.__admin.unlock();
     });
+    return;
   }
+  var ok=false;try{ok=sessionStorage.getItem("owner-ok")===OWNER_HASH}catch(e){}
+  if(ok&&window.__admin)window.__admin.unlock();
 });
 })();
 
@@ -764,6 +810,25 @@ function toggleTheme(){
 
 
 render();
+/* Embedded JSON is the offline fallback. Firestore content, when present, is the live version. */
+window.__portfolioDataReadyDone=false;
+window.__portfolioDataReady=Promise.resolve().then(function(){
+  if(!window.__loadSiteContent)return null;
+  return window.__loadSiteContent();
+}).then(function(remote){
+  if(remote&&typeof remote==="object"&&remote.profile&&Array.isArray(remote.certificates)){
+    S=remote;
+    /* Don't replace the screen while the owner is editing. Admin opening waits for this promise. */
+    if(!document.querySelector(".admin"))render();
+  }
+  return remote;
+}).catch(function(err){
+  console.warn("Using embedded portfolio data because Firebase data could not be loaded:",err);
+  return null;
+}).then(function(remote){
+  window.__portfolioDataReadyDone=true;
+  return remote;
+});
 })();
 
 (function(){
@@ -899,11 +964,15 @@ function setDirty(){dirty=true;armClose=false;msg("Unsaved changes ("+sizeKB(dra
 
 function openAdmin(startTab){
   if(adminEl)return;
+  if(window.__portfolioDataReady&&!window.__portfolioDataReadyDone){
+    window.__portfolioDataReady.then(function(){if(!adminEl)openAdmin(startTab)});
+    return;
+  }
   orig=clone(window.__state());draft=clone(orig);if(!draft.projects)draft.projects=[];dirty=false;armClose=false;tab=typeof startTab==="string"?startTab:"profile";
   adminEl=document.createElement("div");adminEl.className="admin";adminEl.setAttribute("role","dialog");adminEl.setAttribute("aria-label","Admin panel");
   adminEl.innerHTML='<div class="ad-head"><h2>Admin panel</h2><button class="btn sm ghost" id="adClose" style="color:inherit">Close</button></div>'
    +'<div class="tabs" id="adTabs" role="tablist"></div><div class="ad-body" id="adBody"></div>'
-   +'<div class="savebar"><span class="msg" id="adMsg">Change anything, then press Download updated website and upload that file to your hosting.</span><button class="btn" id="adSave">Download updated website</button></div>';
+   +'<div class="savebar"><span class="msg" id="adMsg">Change anything, then press Save Changes. Saved content will be shown to visitors through Firebase.</span><button class="btn" id="adSave">Save Changes</button></div>';
   document.body.appendChild(adminEl);document.body.style.overflow="hidden";
   paint();bindAdmin();bindDrop();
 }
@@ -937,7 +1006,7 @@ function bindAdmin(){
   adminEl.addEventListener("click",function(e){
     var t=e.target.closest("button");if(!t)return;
     if(t.id==="adClose"){
-      if(dirty&&!armClose){armClose=true;msg("You have unsaved changes. Press Close again to discard them, or Publish.");t.textContent="Discard and close";return}
+      if(dirty&&!armClose){armClose=true;msg("You have unsaved changes. Press Save Changes, or Close again to discard them.");t.textContent="Discard and close";return}
       closeAdmin(true);return;
     }
     if(t.id==="adSave"){save();return}
@@ -980,7 +1049,7 @@ function addFiles(files){
     items=items.filter(Boolean);
     items.reverse().forEach(function(c){draft.certificates.unshift(c)});
     tab="certs";setDirty();paint();
-    msg(items.length+" added. Fill in the title and details, then press Publish changes.");
+    msg(items.length+" added. Fill in the title and details, then press Save Changes.");
   });
 }
 function bindDrop(){
@@ -1008,21 +1077,42 @@ function buildDoc(state){
 }
 
 function save(){
-  if(saving||!art)return;
-  if(sizeKB(draft)>14000){msg("The pictures are too big. Remove or replace a large image and try again.");return}
-  saving=true;var b=$("#adSave");b.disabled=true;b.textContent="Preparing...";
-  var html;
-  try{html=buildDoc(draft)}catch(e){saving=false;b.disabled=false;b.textContent="Download updated website";msg("Could not prepare the page. Reload and try again.");return}
-  art.publish(html).then(function(){
-    dirty=false;saving=false;var bb=$("#adSave");if(bb){bb.disabled=false;bb.textContent="Download updated website"}msg("Downloaded. Upload this file to your hosting to publish your changes.");
-  },function(err){
-    saving=false;b.disabled=false;b.textContent="Download updated website";
-    var c=err&&err.code;
-    if(c==="conflict")msg("A newer version was published. The page is reloading, then make your change again.");
-    else if(c==="not_writer"||c==="not_granted"||c==="not_declared"||c==="capability_disabled")msg("This view is read-only, so changes cannot be published here.");
-    else if(c==="too_large")msg("The page is too large. Use smaller pictures.");
-    else if(c==="rate_limited")msg("Too many saves. Wait a minute, then publish once.");
-    else msg("Publishing failed. Check your connection and press Publish again.");
+  if(saving||!draft)return;
+  if(!window.__saveSiteContent){msg("Firebase save is unavailable. Reload the website and try again.");return}
+  var serialized;
+  try{serialized=JSON.stringify(draft)}catch(e){msg("Could not prepare the changes. Reload and try again.");return}
+  var bytes=(typeof Blob!=="undefined")?new Blob([serialized]).size:serialized.length;
+  if(bytes>850000){msg("The content is too large for one Firestore document. Use smaller images and try again.");return}
+  saving=true;
+  var controls=adminEl?adminEl.querySelectorAll("input,textarea,select,button"):[];
+  Array.prototype.forEach.call(controls,function(el){el.disabled=true});
+  var b=$("#adSave");if(b)b.textContent="Saving...";
+  window.__saveSiteContent(clone(draft)).then(function(){
+    var saved=clone(draft);
+    window.__setState(saved);
+    window.__render();
+    orig=clone(saved);draft=clone(saved);dirty=false;armClose=false;
+    saving=false;
+    if(adminEl){
+      var cs=adminEl.querySelectorAll("input,textarea,select,button");
+      Array.prototype.forEach.call(cs,function(el){el.disabled=false});
+      var bb=$("#adSave");if(bb)bb.textContent="Save Changes";
+    }
+    msg("Saved successfully. Changes are now live for visitors.");
+  }).catch(function(err){
+    saving=false;
+    if(adminEl){
+      var cs=adminEl.querySelectorAll("input,textarea,select,button");
+      Array.prototype.forEach.call(cs,function(el){el.disabled=false});
+      var bb=$("#adSave");if(bb)bb.textContent="Save Changes";
+    }
+    var c=err&&err.code||"unknown-error";
+    if(c==="permission-denied")msg("Save failed: publish the updated Firestore Rules from the provided rules file, then sign in again.");
+    else if(c==="unauthenticated")msg("Admin session is not signed in to Firebase. Log in again, then save.");
+    else if(c==="not-configured")msg("Firebase is not configured or could not initialize. Check the Firebase configuration.");
+    else if(c==="too_large")msg("The content is too large for one Firestore document. Use smaller images and try again.");
+    else msg("Save failed ("+c+"). Check your connection and Firestore Rules, then try again.");
+    console.error("Portfolio save failed:",err);
   });
 }
 
