@@ -44,7 +44,11 @@
         "@id": "https://sopnilportfolio.top/#person",
         "name": "Sopnil",
         "url": "https://sopnilportfolio.top/",
-        "description": "Sopnil creates websites, apps, designs, and videos with the help of AI tools."
+        "description": "Sopnil creates websites, apps, designs, and videos with the help of AI tools.",
+        "sameAs": [
+          "https://www.facebook.com/website.builders.bdcom",
+          "https://www.youtube.com/@WebTech25"
+        ]
       }
     }
   ]
@@ -60,9 +64,9 @@ body{margin:0;font:14px system-ui,sans-serif}
 img{max-width:100%}
 [hidden]{display:none!important}
 </style>
-<script data-keep src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script data-keep src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-<script data-keep src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script data-keep defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script data-keep defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script data-keep defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <style id="app-style">/* Layout concept: green ribbon header, an opening stage where a medal swings over a floating certificate, a slanted amber skills band, then calm card sections. */
 :root{
   --bg:#f2f6ef; --surface:#ffffff; --surface2:#e8efe4; --ink:#13281b; --muted:#53695a; --line:#d3dfcf;
@@ -671,7 +675,7 @@ function render(){
    +'</div>'
    +'<div class="stage" id="stage"><div class="medal"><img src="'+esc(p.medal)+'" alt="Grand Champion medal"></div>'
    +'<div class="fan" id="fan">'+certs.map(function(c,i){return '<button class="cc" data-fan="'+i+'" aria-label="Open certificate: '+esc(c.title)+'"><img src="'+esc(c.img)+'" alt="'+esc(c.title)+'"></button>'}).join("")+'</div>'
-   +'<div class="avatar"><img src="'+esc(p.photoHero)+'" alt="Portrait of '+esc(p.name)+'"><div><b>'+esc(first)+'</b><small>'+esc(p.role)+'</small></div></div>'
+   +'<div class="avatar"><img src="'+esc(p.photoHero)+'" alt="Portrait of '+esc(p.name)+'" fetchpriority="high"><div><b>'+esc(first)+'</b><small>'+esc(p.role)+'</small></div></div>'
    +'<span class="hint">'+(certs.length>1?'Tap a certificate':'Tap to zoom')+'</span></div></div></section>';
   h+='<div class="band" aria-hidden="true"><div class="band-track">'+bandHtml+bandHtml+bandHtml+bandHtml+'</div></div>';
 
