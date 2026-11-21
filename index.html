@@ -380,7 +380,8 @@ html,body{overflow-x:clip}
    4) The contact form only saves visitor messages to Firestore; it never performs admin login.
    Until Firebase is configured, the fallback passcode can open the admin panel, but messages cannot be stored in Firestore.
 
-   Firestore rules to paste in Firebase (Firestore Database, Rules):
+   Firestore rules to paste in Firebase (Firestore Database → Rules).
+   Portfolio content must be readable by visitors, while only the owner can write:
    rules_version = '2';
    service cloud.firestore {
      match /databases/{database}/documents {
@@ -392,6 +393,15 @@ html,body{overflow-x:clip}
            && request.resource.data.createdAt == request.time;
          allow read, delete: if request.auth != null && request.auth.token.email == 'sopnilprodhan13@gmail.com';
          allow update: if false;
+       }
+       match /siteContent/portfolio {
+         allow read: if true;
+         allow create, update: if request.auth != null
+           && request.auth.token.email == 'sopnilprodhan13@gmail.com'
+           && request.resource.data.keys().hasOnly(['data','updatedAt'])
+           && request.resource.data.data is map
+           && request.resource.data.updatedAt == request.time;
+         allow delete: if false;
        }
      }
    }
@@ -411,7 +421,7 @@ var SALT="sopnil-portfolio:";
 /* =============================================== */
 
 function fbConfigured(){return !!(window.firebase&&FIREBASE_CONFIG.apiKey&&FIREBASE_CONFIG.apiKey.indexOf("PASTE")!==0)}
-var auth=null,db=null,fbApp=null;
+var auth=null,db=null,fbApp=null,authReadyPromise=null;
 function initFb(){
   if(auth&&db)return true;
   if(!fbConfigured())return false;
@@ -594,11 +604,44 @@ window.__deleteMessage=function(id){
 };
 
 /* Load and save the portfolio content separately from visitor messages. */
+function waitForAuthReady(){
+  if(!initFb())return Promise.reject({code:"not-configured"});
+  if(authReadyPromise)return authReadyPromise;
+  authReadyPromise=new Promise(function(resolve,reject){
+    var unsubscribe=null,settled=false;
+    var timer=setTimeout(function(){
+      if(settled)return;
+      settled=true;
+      if(typeof unsubscribe==="function")unsubscribe();
+      authReadyPromise=null;
+      reject({code:"auth/timeout"});
+    },10000);
+    function finish(ok,value){
+      if(settled)return;
+      settled=true;clearTimeout(timer);
+      if(typeof unsubscribe==="function")unsubscribe();
+      if(ok)resolve(value||null);
+      else{authReadyPromise=null;reject(value)}
+    }
+    unsubscribe=auth.onAuthStateChanged(function(user){
+      /* The first callback means Firebase has restored the persisted session. */
+      finish(true,user);
+    },function(err){
+      finish(false,{code:(err&&err.code)||"auth/initialization-error"});
+    });
+  });
+  return authReadyPromise;
+}
 window.__loadSiteContent=function(){
   if(!initFb())return Promise.resolve(null);
-  return db.collection("siteContent").doc("portfolio").get().then(function(snap){
+  /* Do not read Firestore until Firebase has restored the saved admin session.
+     Otherwise the first page load can race ahead as an unauthenticated visitor. */
+  return waitForAuthReady().then(function(){
+    return db.collection("siteContent").doc("portfolio").get();
+  }).then(function(snap){
     if(!snap.exists)return null;
     var row=snap.data();
+    window.__siteContentLoadError="";
     return row&&row.data&&typeof row.data==="object"?row.data:null;
   }).catch(function(err){
     window.__siteContentLoadError=err&&err.code||"read-failed";
