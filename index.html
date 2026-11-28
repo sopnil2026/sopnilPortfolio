@@ -657,9 +657,9 @@ window.__uploadSiteImages=function(state){
   return waitForOwnerSession().then(function(user){
     var count=0;
     function walk(value){
-      if(typeof value==="string"&&/^data:image\\//i.test(value)){
+      if(typeof value==="string"&&/^data:image\//i.test(value)){
         count++;
-        var match=value.match(/^data:(image\\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+        var match=value.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
         if(!match)return Promise.reject({code:"invalid-image"});
         var mime=match[1],raw=atob(match[2]),bytes=new Uint8Array(raw.length);
         for(var i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
