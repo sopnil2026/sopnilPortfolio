@@ -67,6 +67,7 @@ img{max-width:100%}
 <script data-keep defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script data-keep defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script data-keep defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script data-keep defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
 <style id="app-style">/* Layout concept: green ribbon header, an opening stage where a medal swings over a floating certificate, a slanted amber skills band, then calm card sections. */
 :root{
   --bg:#f2f6ef; --surface:#ffffff; --surface2:#e8efe4; --ink:#13281b; --muted:#53695a; --line:#d3dfcf;
@@ -421,9 +422,9 @@ var SALT="sopnil-portfolio:";
 /* =============================================== */
 
 function fbConfigured(){return !!(window.firebase&&FIREBASE_CONFIG.apiKey&&FIREBASE_CONFIG.apiKey.indexOf("PASTE")!==0)}
-var auth=null,db=null,fbApp=null,authReadyPromise=null;
+var auth=null,db=null,storage=null,fbApp=null,authReadyPromise=null;
 function initFb(){
-  if(auth&&db)return true;
+  if(auth&&db&&storage)return true;
   if(!fbConfigured())return false;
   try{
     /* Reuse an app pointed at this exact Firebase project; do not accidentally
@@ -442,9 +443,10 @@ function initFb(){
     }
     auth=firebase.auth(fbApp);
     db=firebase.firestore(fbApp);
-    return !!(auth&&db);
+    storage=firebase.storage(fbApp);
+    return !!(auth&&db&&storage);
   }catch(e){
-    auth=null;db=null;fbApp=null;
+    auth=null;db=null;storage=null;fbApp=null;
     console.error("Firebase initialization failed:",e);
     return false;
   }
@@ -649,6 +651,36 @@ window.__loadSiteContent=function(){
     return null;
   });
 };
+/* Move image data out of Firestore. Only download URLs remain in the siteContent document. */
+window.__uploadSiteImages=function(state){
+  if(!initFb())return Promise.reject({code:"not-configured"});
+  return waitForOwnerSession().then(function(user){
+    var count=0;
+    function walk(value){
+      if(typeof value==="string"&&/^data:image\\//i.test(value)){
+        count++;
+        var match=value.match(/^data:(image\\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+        if(!match)return Promise.reject({code:"invalid-image"});
+        var mime=match[1],raw=atob(match[2]),bytes=new Uint8Array(raw.length);
+        for(var i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
+        var ext=mime.indexOf("png")>-1?"png":mime.indexOf("webp")>-1?"webp":"jpg";
+        var path="portfolio-media/"+user.uid+"/"+Date.now()+"-"+count+"-"+Math.random().toString(36).slice(2)+"."+ext;
+        return storage.ref().child(path).put(new Blob([bytes],{type:mime}),{contentType:mime})
+          .then(function(snapshot){return snapshot.ref.getDownloadURL()});
+      }
+      if(Array.isArray(value))return Promise.all(value.map(walk));
+      if(value&&typeof value==="object"){
+        var out={};
+        return Promise.all(Object.keys(value).map(function(key){
+          return walk(value[key]).then(function(next){out[key]=next});
+        })).then(function(){return out});
+      }
+      return Promise.resolve(value);
+    }
+    return walk(state);
+  });
+};
+
 window.__saveSiteContent=function(state){
   if(!initFb())return Promise.reject({code:"not-configured"});
   /* Wait for Firebase to restore/confirm the real owner session before writing.
@@ -1277,17 +1309,20 @@ function buildDoc(state){
 
 function save(){
   if(saving||!draft)return;
-  if(!window.__saveSiteContent){msg("Firebase save is unavailable. Reload the website and try again.");return}
-  var serialized;
-  try{serialized=JSON.stringify(draft)}catch(e){msg("Could not prepare the changes. Reload and try again.");return}
-  var bytes=(typeof Blob!=="undefined")?new Blob([serialized]).size:serialized.length;
-  if(bytes>850000){msg("The content is too large for one Firestore document. Use smaller images and try again.");return}
+  if(!window.__saveSiteContent||!window.__uploadSiteImages){msg("Firebase Storage is unavailable. Reload the website and try again.");return}
   saving=true;
   var controls=adminEl?adminEl.querySelectorAll("input,textarea,select,button"):[];
   Array.prototype.forEach.call(controls,function(el){el.disabled=true});
-  var b=$("#adSave");if(b)b.textContent="Saving...";
-  window.__saveSiteContent(clone(draft)).then(function(){
-    var saved=clone(draft);
+  var b=$("#adSave");if(b)b.textContent="Uploading...";
+  msg("Uploading certificate and portfolio images securely...");
+  window.__uploadSiteImages(clone(draft)).then(function(uploadedState){
+    var serialized=JSON.stringify(uploadedState);
+    var bytes=(typeof Blob!=="undefined")?new Blob([serialized]).size:serialized.length;
+    if(bytes>850000)throw {code:"too_large"};
+    if(b)b.textContent="Saving...";
+    return window.__saveSiteContent(uploadedState).then(function(){return uploadedState});
+  }).then(function(uploadedState){
+    var saved=clone(uploadedState);
     window.__setState(saved);
     window.__render();
     orig=clone(saved);draft=clone(saved);dirty=false;armClose=false;
@@ -1309,7 +1344,9 @@ function save(){
     if(c==="permission-denied")msg("Save failed: publish the updated Firestore Rules from the provided rules file, then sign in again.");
     else if(c==="unauthenticated")msg("Admin session is not signed in to Firebase. Log in again, then save.");
     else if(c==="not-configured")msg("Firebase is not configured or could not initialize. Check the Firebase configuration.");
-    else if(c==="too_large")msg("The content is too large for one Firestore document. Use smaller images and try again.");
+    else if(c==="too_large")msg("The text and image links are still too large for Firestore. Remove unused items and try again.");
+    else if(c==="storage/unauthorized"||c==="unauthorized")msg("Image upload blocked. Publish the Firebase Storage Rules supplied with this update, then sign in again.");
+    else if(c==="storage/bucket-not-found")msg("Firebase Storage is not enabled for this project. Enable Storage in Firebase Console, then try again.");
     else msg("Save failed ("+c+"). Check your connection and Firestore Rules, then try again.");
     console.error("Portfolio save failed:",err);
   });
