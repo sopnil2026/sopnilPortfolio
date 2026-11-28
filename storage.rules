@@ -1,0 +1,20 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Portfolio images: only the signed-in portfolio owner can upload,
+    // replace, or delete files in their own UID folder.
+    match /portfolio-media/{userId}/{fileName} {
+      allow read: if true;
+      allow write: if request.auth != null
+        && request.auth.uid == userId
+        && request.auth.token.email == 'sopnilprodhan13@gmail.com'
+        && (
+          request.resource == null
+          || (
+            request.resource.size < 8 * 1024 * 1024
+            && request.resource.contentType.matches('image/.*')
+          )
+        );
+    }
+  }
+}
